@@ -34,11 +34,12 @@ class StreamExecutionEnvironmentCompletenessTests(PythonAPICompletenessTestCase,
     @classmethod
     def excluded_methods(cls):
         # Exclude these methods for the time being, because current
-        # ExecutionEnvironment/StreamExecutionEnvironment do not apply to the
-        # DataSet/DataStream API, but to the Table API configuration.
+        # StreamExecutionEnvironment do not apply to the
+        # DataStream API, but to the Table API configuration.
         # Currently only the methods for configuration is added.
         # 'isForceCheckpointing', 'getNumberOfExecutionRetries', 'setNumberOfExecutionRetries'
         # is deprecated, exclude them.
+        # TODO the registerSlotSharingGroup should be removed from this list after FLINK-23165.
         return {'getLastJobExecutionResult', 'getId', 'getIdString',
                 'registerCachedFile', 'createCollectionsEnvironment', 'createLocalEnvironment',
                 'createRemoteEnvironment', 'addOperator', 'fromElements',
@@ -46,9 +47,9 @@ class StreamExecutionEnvironmentCompletenessTests(PythonAPICompletenessTestCase,
                 'getNumberOfExecutionRetries', 'getStreamGraph', 'fromParallelCollection',
                 'readFileStream', 'isForceCheckpointing', 'readFile', 'clean',
                 'createInput', 'createLocalEnvironmentWithWebUI', 'fromCollection',
-                'socketTextStream', 'initializeContextEnvironment', 'readTextFile', 'addSource',
+                'socketTextStream', 'initializeContextEnvironment', 'readTextFile',
                 'setNumberOfExecutionRetries', 'configure', 'executeAsync', 'registerJobListener',
-                'clearJobListeners', 'getJobListeners', "fromSource"}
+                'clearJobListeners', 'getJobListeners', "fromSequence", "registerSlotSharingGroup"}
 
 
 if __name__ == '__main__':

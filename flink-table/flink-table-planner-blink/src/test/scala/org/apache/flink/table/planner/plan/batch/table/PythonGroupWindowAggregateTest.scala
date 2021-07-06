@@ -20,7 +20,7 @@ package org.apache.flink.table.planner.plan.batch.table
 
 import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
-import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedAggFunctions.PandasAggregateFunction
+import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedAggFunctions.{PandasAggregateFunction, TestPythonAggregateFunction}
 import org.apache.flink.table.planner.utils.TableTestBase
 
 import org.junit.Test
@@ -39,7 +39,7 @@ class PythonGroupWindowAggregateTest extends TableTestBase {
       .groupBy('w, 'b)
       .select('b, 'w.start,'w.end, func('a, 'c))
 
-    util.verifyPlan(resultTable)
+    util.verifyExecPlan(resultTable)
   }
 
   @Test(expected = classOf[TableException])
@@ -54,7 +54,7 @@ class PythonGroupWindowAggregateTest extends TableTestBase {
       .groupBy('w, 'b)
       .select('b, func('a, 'c))
 
-    util.verifyPlan(resultTable)
+    util.verifyExecPlan(resultTable)
   }
 
   @Test
@@ -69,7 +69,7 @@ class PythonGroupWindowAggregateTest extends TableTestBase {
       .groupBy('w, 'b)
       .select('b, 'w.start,'w.end, func('a, 'c))
 
-    util.verifyPlan(resultTable)
+    util.verifyExecPlan(resultTable)
   }
 
   @Test(expected = classOf[TableException])
@@ -84,7 +84,7 @@ class PythonGroupWindowAggregateTest extends TableTestBase {
       .groupBy('w, 'b)
       .select('b, func('a, 'c))
 
-    util.verifyPlan(resultTable)
+    util.verifyExecPlan(resultTable)
   }
 
   @Test
@@ -99,6 +99,21 @@ class PythonGroupWindowAggregateTest extends TableTestBase {
       .groupBy('w)
       .select('w.start,'w.end, func('a, 'c))
 
-    util.verifyPlan(resultTable)
+    util.verifyExecPlan(resultTable)
+  }
+
+  @Test(expected = classOf[TableException])
+  def testGeneralEventTimeTumblingGroupWindowOverTime(): Unit = {
+    val util = batchTestUtil()
+    val sourceTable = util.addTableSource[(Int, Long, Int, Long)](
+      "MyTable", 'a, 'b, 'c, 'rowtime.rowtime)
+    val func = new TestPythonAggregateFunction
+
+    val resultTable = sourceTable
+      .window(Tumble over 5.millis on 'rowtime as 'w)
+      .groupBy('w, 'b)
+      .select('b, 'w.start,'w.end, func('a, 'c))
+
+    util.verifyExecPlan(resultTable)
   }
 }

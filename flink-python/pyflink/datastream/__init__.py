@@ -70,14 +70,23 @@ from pyflink.datastream.checkpoint_config import CheckpointConfig, ExternalizedC
 from pyflink.datastream.checkpointing_mode import CheckpointingMode
 from pyflink.datastream.data_stream import DataStream
 from pyflink.datastream.functions import (MapFunction, CoMapFunction, FlatMapFunction,
-                                          CoFlatMapFunction, ReduceFunction, KeySelector,
-                                          FilterFunction, Partitioner, SourceFunction,
+                                          CoFlatMapFunction, ReduceFunction, RuntimeContext,
+                                          KeySelector, FilterFunction, Partitioner, SourceFunction,
                                           SinkFunction)
 from pyflink.datastream.state_backend import (StateBackend, MemoryStateBackend, FsStateBackend,
                                               RocksDBStateBackend, CustomStateBackend,
-                                              PredefinedOptions)
+                                              PredefinedOptions, HashMapStateBackend,
+                                              EmbeddedRocksDBStateBackend)
+from pyflink.datastream.checkpoint_storage import (CheckpointStorage, JobManagerCheckpointStorage,
+                                                   FileSystemCheckpointStorage,
+                                                   CustomCheckpointStorage)
 from pyflink.datastream.stream_execution_environment import StreamExecutionEnvironment
 from pyflink.datastream.time_characteristic import TimeCharacteristic
+from pyflink.datastream.time_domain import TimeDomain
+from pyflink.datastream.functions import ProcessFunction
+from pyflink.datastream.timerservice import TimerService
+from pyflink.datastream.window import Window, TimeWindow, CountWindow, WindowAssigner, \
+    MergingWindowAssigner, TriggerResult, Trigger
 
 __all__ = [
     'StreamExecutionEnvironment',
@@ -91,15 +100,32 @@ __all__ = [
     'KeySelector',
     'Partitioner',
     'ReduceFunction',
+    'RuntimeContext',
     'SinkFunction',
     'SourceFunction',
     'StateBackend',
     'MapFunction',
+    'HashMapStateBackend',
+    'EmbeddedRocksDBStateBackend',
     'MemoryStateBackend',
     'FsStateBackend',
     'RocksDBStateBackend',
     'CustomStateBackend',
     'PredefinedOptions',
+    'CheckpointStorage',
+    'JobManagerCheckpointStorage',
+    'FileSystemCheckpointStorage',
+    'CustomCheckpointStorage',
     'ExternalizedCheckpointCleanup',
-    'TimeCharacteristic'
+    'TimeCharacteristic',
+    'TimeDomain',
+    'ProcessFunction',
+    'TimerService',
+    'Window',
+    'TimeWindow',
+    'CountWindow',
+    'WindowAssigner',
+    'MergingWindowAssigner',
+    'TriggerResult',
+    'Trigger'
 ]

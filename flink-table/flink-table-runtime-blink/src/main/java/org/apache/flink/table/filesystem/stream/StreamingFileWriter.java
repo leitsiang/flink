@@ -18,144 +18,138 @@
 
 package org.apache.flink.table.filesystem.stream;
 
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
-import org.apache.flink.streaming.api.functions.sink.filesystem.Bucket;
-import org.apache.flink.streaming.api.functions.sink.filesystem.BucketLifeCycleListener;
-import org.apache.flink.streaming.api.functions.sink.filesystem.Buckets;
 import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink;
-import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSinkHelper;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.BoundedOneInput;
-import org.apache.flink.streaming.api.operators.ChainingStrategy;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.filesystem.stream.StreamingFileCommitter.CommitMessage;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Set;
+import java.util.TreeMap;
 
-/**
- * Operator for file system sink. It is a operator version of {@link StreamingFileSink}.
- * It sends partition commit message to downstream for committing.
- *
- * <p>See {@link StreamingFileCommitter}.
- */
-public class StreamingFileWriter extends AbstractStreamOperator<CommitMessage>
-		implements OneInputStreamOperator<RowData, CommitMessage>, BoundedOneInput{
+import static org.apache.flink.table.filesystem.FileSystemOptions.SINK_PARTITION_COMMIT_POLICY_KIND;
+import static org.apache.flink.table.filesystem.stream.PartitionCommitPredicate.PredicateContext;
 
-	private static final long serialVersionUID = 1L;
+/** Writer for emitting {@link PartitionCommitInfo} to downstream. */
+public class StreamingFileWriter<IN> extends AbstractStreamingWriter<IN, PartitionCommitInfo> {
 
-	// ------------------------ configuration fields --------------------------
+    private static final long serialVersionUID = 2L;
 
-	private final long bucketCheckInterval;
+    private final List<String> partitionKeys;
+    private final Configuration conf;
 
-	private final StreamingFileSink.BucketsBuilder<RowData, String, ? extends
-			StreamingFileSink.BucketsBuilder<RowData, String, ?>> bucketsBuilder;
+    private transient Set<String> currentNewPartitions;
+    private transient TreeMap<Long, Set<String>> newPartitions;
+    private transient Set<String> committablePartitions;
+    private transient Map<String, Long> inProgressPartitions;
 
-	// --------------------------- runtime fields -----------------------------
+    private transient PartitionCommitPredicate partitionCommitPredicate;
 
-	private transient Buckets<RowData, String> buckets;
+    public StreamingFileWriter(
+            long bucketCheckInterval,
+            StreamingFileSink.BucketsBuilder<
+                            IN, String, ? extends StreamingFileSink.BucketsBuilder<IN, String, ?>>
+                    bucketsBuilder,
+            List<String> partitionKeys,
+            Configuration conf) {
+        super(bucketCheckInterval, bucketsBuilder);
+        this.partitionKeys = partitionKeys;
+        this.conf = conf;
+    }
 
-	private transient StreamingFileSinkHelper<RowData> helper;
+    @Override
+    public void initializeState(StateInitializationContext context) throws Exception {
+        if (isPartitionCommitTriggerEnabled()) {
+            partitionCommitPredicate =
+                    PartitionCommitPredicate.create(conf, getUserCodeClassloader(), partitionKeys);
+        }
 
-	private transient long currentWatermark;
+        currentNewPartitions = new HashSet<>();
+        newPartitions = new TreeMap<>();
+        committablePartitions = new HashSet<>();
+        inProgressPartitions = new HashMap<>();
+        super.initializeState(context);
+    }
 
-	private transient Set<String> inactivePartitions;
+    @Override
+    protected void partitionCreated(String partition) {
+        currentNewPartitions.add(partition);
+        inProgressPartitions.putIfAbsent(
+                partition, getProcessingTimeService().getCurrentProcessingTime());
+    }
 
-	public StreamingFileWriter(
-			long bucketCheckInterval,
-			StreamingFileSink.BucketsBuilder<RowData, String, ? extends
-					StreamingFileSink.BucketsBuilder<RowData, String, ?>> bucketsBuilder) {
-		this.bucketCheckInterval = bucketCheckInterval;
-		this.bucketsBuilder = bucketsBuilder;
-		setChainingStrategy(ChainingStrategy.ALWAYS);
-	}
+    @Override
+    protected void partitionInactive(String partition) {
+        committablePartitions.add(partition);
+        inProgressPartitions.remove(partition);
+    }
 
-	@Override
-	public void initializeState(StateInitializationContext context) throws Exception {
-		super.initializeState(context);
-		buckets = bucketsBuilder.createBuckets(getRuntimeContext().getIndexOfThisSubtask());
+    @Override
+    protected void onPartFileOpened(String s, Path newPath) {}
 
-		// Set listener before the initialization of Buckets.
-		inactivePartitions = new HashSet<>();
-		buckets.setBucketLifeCycleListener(new BucketLifeCycleListener<RowData, String>() {
-			@Override
-			public void bucketCreated(Bucket<RowData, String> bucket) {
-			}
+    @Override
+    public void snapshotState(StateSnapshotContext context) throws Exception {
+        closePartFileForPartitions();
+        super.snapshotState(context);
+        newPartitions.put(context.getCheckpointId(), new HashSet<>(currentNewPartitions));
+        currentNewPartitions.clear();
+    }
 
-			@Override
-			public void bucketInactive(Bucket<RowData, String> bucket) {
-				inactivePartitions.add(bucket.getBucketId());
-			}
-		});
+    private boolean isPartitionCommitTriggerEnabled() {
+        // when partition keys and partition commit policy exist,
+        // the partition commit trigger is enabled
+        return partitionKeys.size() > 0 && conf.contains(SINK_PARTITION_COMMIT_POLICY_KIND);
+    }
 
-		helper = new StreamingFileSinkHelper<>(
-				buckets,
-				context.isRestored(),
-				context.getOperatorStateStore(),
-				getRuntimeContext().getProcessingTimeService(),
-				bucketCheckInterval);
-		currentWatermark = Long.MIN_VALUE;
-	}
+    /** Close in-progress part file when partition is committable. */
+    private void closePartFileForPartitions() throws Exception {
+        if (partitionCommitPredicate != null) {
+            final Iterator<Map.Entry<String, Long>> iterator =
+                    inProgressPartitions.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, Long> entry = iterator.next();
+                String partition = entry.getKey();
+                Long creationTime = entry.getValue();
+                PredicateContext predicateContext =
+                        PartitionCommitPredicate.createPredicateContext(
+                                partition,
+                                creationTime,
+                                processingTimeService.getCurrentProcessingTime(),
+                                currentWatermark);
+                if (partitionCommitPredicate.isPartitionCommittable(predicateContext)) {
+                    // if partition is committable, close in-progress part file in this partition
+                    buckets.closePartFileForBucket(partition);
+                    iterator.remove();
+                }
+            }
+        }
+    }
 
-	@Override
-	public void snapshotState(StateSnapshotContext context) throws Exception {
-		super.snapshotState(context);
-		helper.snapshotState(context.getCheckpointId());
-	}
+    @Override
+    protected void commitUpToCheckpoint(long checkpointId) throws Exception {
+        super.commitUpToCheckpoint(checkpointId);
 
-	@Override
-	public void processWatermark(Watermark mark) throws Exception {
-		super.processWatermark(mark);
-		currentWatermark = mark.getTimestamp();
-	}
+        NavigableMap<Long, Set<String>> headPartitions =
+                this.newPartitions.headMap(checkpointId, true);
+        Set<String> partitions = new HashSet<>(committablePartitions);
+        committablePartitions.clear();
+        headPartitions.values().forEach(partitions::addAll);
+        headPartitions.clear();
 
-	@Override
-	public void processElement(StreamRecord<RowData> element) throws Exception {
-		helper.onElement(
-				element.getValue(),
-				getProcessingTimeService().getCurrentProcessingTime(),
-				element.hasTimestamp() ? element.getTimestamp() : null,
-				currentWatermark);
-	}
-
-	/**
-	 * Commit up to this checkpoint id, also send inactive partitions to downstream for committing.
-	 */
-	@Override
-	public void notifyCheckpointComplete(long checkpointId) throws Exception {
-		super.notifyCheckpointComplete(checkpointId);
-		commitUpToCheckpoint(checkpointId);
-	}
-
-	private void commitUpToCheckpoint(long checkpointId) throws Exception {
-		helper.commitUpToCheckpoint(checkpointId);
-		CommitMessage message = new CommitMessage(
-				checkpointId,
-				getRuntimeContext().getIndexOfThisSubtask(),
-				getRuntimeContext().getNumberOfParallelSubtasks(),
-				new ArrayList<>(inactivePartitions));
-		output.collect(new StreamRecord<>(message));
-		inactivePartitions.clear();
-	}
-
-	@Override
-	public void endInput() throws Exception {
-		buckets.onProcessingTime(Long.MAX_VALUE);
-		helper.snapshotState(Long.MAX_VALUE);
-		output.emitWatermark(new Watermark(Long.MAX_VALUE));
-		commitUpToCheckpoint(Long.MAX_VALUE);
-	}
-
-	@Override
-	public void dispose() throws Exception {
-		super.dispose();
-		if (helper != null) {
-			helper.close();
-		}
-	}
+        output.collect(
+                new StreamRecord<>(
+                        new PartitionCommitInfo(
+                                checkpointId,
+                                getRuntimeContext().getIndexOfThisSubtask(),
+                                getRuntimeContext().getNumberOfParallelSubtasks(),
+                                new ArrayList<>(partitions))));
+    }
 }
